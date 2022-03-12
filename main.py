@@ -7,11 +7,11 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 import re
 
-w2vmodel_path = "w2v(6).model"
-finalmodel_path = "final(6).model"
+w2vmodel_path = "w2v.model"
+finalmodel_path = "final.model"
 # 定义读取数据文件的函数
 
-DataPath = "E:\\PyCharm_File\\ATAI_project\\DataFile"
+DataPath = "D:\My_coding\PyCharm\ATAI_projects\\DataFile"
 # 设置警告忽略，将一些无用的风险给忽略掉（仅仅是满足强迫症）
 warnings.filterwarnings("ignore")
 
@@ -264,7 +264,8 @@ def training(batch_size, n_epoch, lr, train, valid, model, device):
         print('-----------------------------------------------')
 
 
-device = torch.device("cpu")  # 目前穷逼的我只能用cpu来跑
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(device)
 
 
 sen_len = 150  # 句子固定长度
