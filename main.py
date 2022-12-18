@@ -1,3 +1,5 @@
+import os
+from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,14 +8,18 @@ from gensim.models.word2vec import Word2Vec
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 import re
+import numpy as np
 
-w2vmodel_path = "w2v.model"
-finalmodel_path = "final.model"
 # 定义读取数据文件的函数
-
-DataPath = "D:\My_coding\PyCharm\ATAI_projects\\DataFile"
+DataPath = "DataFile"
+FilePath = "DataFile/OutData/LSTM_ENG_OUTDATA"
+w2vmodel_path = f"{FilePath}/w2v.model"
+finalmodel_path = f"{FilePath}/LSTM_ENG.pth"
 # 设置警告忽略，将一些无用的风险给忽略掉（仅仅是满足强迫症）
 warnings.filterwarnings("ignore")
+# 数据分析图像存放路径
+GraphPath = "DataFile/OutData/LSTM_ENG_OUTDATA/graph"
+writer = SummaryWriter(log_dir=f'{GraphPath}/logs')
 
 
 def read_training_data():
@@ -52,8 +58,8 @@ def read_testing_data():
 def evaluation(outputs, labels):
     # outputs为预测值，是一个位于0——1的概率
     # labels为标签，真实值，是0或者1
-    outputs[outputs>=0.5] = 1
-    outputs[outputs<0.5]  = 0
+    outputs[outputs >= 0.5] = 1
+    outputs[outputs < 0.5] = 0
     accuracy = torch.sum(torch.eq(outputs, labels)).item()
     return accuracy
 
@@ -64,18 +70,12 @@ def train_word2vec(x):
     return model
 
 
-train_x, train_label = read_training_data()
-test_x = read_testing_data()
-model = train_word2vec(train_x + test_x)
-model.save(w2vmodel_path)  # 保存word2vec模型
-
-
 # 数据预处理类
 class Preprocess():
     def __init__(self, sentences, sentence_len, w2v_path):
         self.sentences = sentences  # 句子
         self.sentence_len = sentence_len  # 句子的固定长度
-        self.w2v_path = w2v_path  # w2v模型的存储地址
+        self.w2v_path = w2v_path  # w2v模型的地址
         self.word2index = {}  # 字典，返回目标词的下标
         self.index2word = []  # 列表，返回目标下标的词
         self.embedding_matrix = []  # 列表，返回目标下标的词的词向量
@@ -188,7 +188,7 @@ class BiLSTM_Net(nn.Module):
         # 分类器全连接层
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(2*hidden_dim, 64),
+            nn.Linear(2 * hidden_dim, 64),
             nn.Dropout(dropout),
             nn.Linear(64, 32),
             nn.Dropout(dropout),
@@ -215,10 +215,10 @@ def training(batch_size, n_epoch, lr, train, valid, model, device):
     loss = nn.BCELoss()  # 损失函数为二元交叉损失函数
     t_batch = len(train)
     v_batch = len(valid)
-    optimizer = optim.Adam(model.parameters(), lr=lr)  # optimizer设置为Ada,学习率提前设置为lr
+    optimizer = optim.Adam(model.parameters(), lr=lr)  # optimizer(优化器)设置为Ada,学习率提前设置为lr
     total_loss, total_acc, best_acc = 0, 0, 0
 
-    for epoch in range(n_epoch):
+    for epoch in range(n_epoch):  # 总共训练15轮
         total_loss, total_acc = 0, 0
 
         # training
@@ -233,12 +233,14 @@ def training(batch_size, n_epoch, lr, train, valid, model, device):
             batch_loss = loss(outputs, labels)  # 计算此时数据的loss
             batch_loss.backward()  # 计算loss的梯度
             optimizer.step()
-
             accuracy = evaluation(outputs, labels)
-            total_acc += (accuracy/batch_size)
+
+            total_acc += (accuracy / batch_size)
             total_loss += batch_loss.item()
         print('Epoch | {}/{}'.format(epoch + 1, n_epoch))
         print('Train | Loss:{:.5f} Acc: {:.3f}'.format(total_loss / t_batch, total_acc / t_batch * 100))
+        writer.add_scalar('tra_loss', total_loss / t_batch, epoch + 1)
+        writer.add_scalar('tra_acc', total_acc / t_batch * 100, epoch + 1)
 
         # validation
         model.eval()
@@ -253,52 +255,19 @@ def training(batch_size, n_epoch, lr, train, valid, model, device):
                 outputs = outputs.squeeze()
                 batch_loss = loss(outputs, labels)
                 accuracy = evaluation(outputs, labels)
+
                 total_acc += (accuracy / batch_size)
                 total_loss += batch_loss.item()
 
             print("Valid | Loss:{:.5f} Acc: {:.3f} ".format(total_loss / v_batch, total_acc / v_batch * 100))
+            writer.add_scalar('val_loss', total_loss / v_batch, epoch + 1)
+            writer.add_scalar('val_acc', total_acc / v_batch * 100, epoch + 1)
+
             if total_acc > best_acc:
                 # 如果 validation 的结果优于之前所有的結果，就把当下的模型保存下来，用于之后的testing
                 best_acc = total_acc
                 torch.save(model, finalmodel_path)
         print('-----------------------------------------------')
-
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(device)
-
-
-sen_len = 150  # 句子固定长度
-fix_embedding = True
-batch_size = 64
-epoch = 15
-lr = 0.001
-w2v_path = w2vmodel_path  # 词典模型的地址
-
-print("loadin data ...")
-train_x, y = read_training_data()
-
-preprocess =Preprocess(train_x, sen_len, w2v_path=w2v_path)
-embedding = preprocess.make_embedding(load=True)
-train_x = preprocess.sentence_word2index()
-y = preprocess.labels_tensor(y)
-
-# 定义模型
-model = BiLSTM_Net(embedding, embedding_dim=250, hidden_dim=100, num_layers=1, dropout=0.5, fix_embedding=fix_embedding)
-model = model.to(device)
-
-# 把train——data分为training_data和validation_data两部分
-
-x_train, x_val, y_train, y_val = train_test_split(train_x, y, test_size=0.1, random_state=1, stratify=y)
-print('Train | Len:{} \nValid | Len:{}'.format(len(y_train), len(y_val)))
-
-train_dataset = myDataset(x=x_train, y=y_train)
-val_dataset = myDataset(x=x_val, y=y_val)
-
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-
-training(batch_size=batch_size, n_epoch=epoch, lr=lr, train=train_loader, valid=val_loader, model=model, device=device)
 
 
 def testing(batch_size, test_loader, model, device):
@@ -315,28 +284,75 @@ def testing(batch_size, test_loader, model, device):
         return ret_output
 
 
-# 开始test
-print("loading testdata ...")
-test_x = read_testing_data()
-preprocess = Preprocess(test_x, sen_len, w2v_path=w2v_path)
-embedding = preprocess.make_embedding(load=True)
-test_x = preprocess.sentence_word2index()
-test_dataset = myDataset(x=test_x, y=None)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+if __name__ == '__main__':
+    train_x, train_label = read_training_data()
+    test_x = read_testing_data()
+    model = train_word2vec(train_x + test_x)  # word2vec的模型对象
+    model.save(w2vmodel_path)  # 保存word2vec模型
 
-print("\nload model ...")
-model = torch.load(finalmodel_path)
-outputs = testing(batch_size=batch_size, test_loader=test_loader, model=model, device=device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(device)
 
-with open("work.txt", "w") as f:
-    for line in outputs:
-        f.write(str(line)+"\n")
-f.close()
+    sen_len = 150  # 句子固定长度
+    fix_embedding = True
+    batch_size = 64
+    epoch = 15
+    lr = 0.001
+    w2v_path = w2vmodel_path  # 词典模型的地址
 
+    print("loadin data ...")
+    train_x, y = read_training_data()
 
+    preprocess = Preprocess(train_x, sen_len, w2v_path=w2v_path)
+    embedding = preprocess.make_embedding(load=True)
+    train_x = preprocess.sentence_word2index()  # 以单词在词向量中的index表示的完整句子，用于训练数据
+    y = preprocess.labels_tensor(y)
 
+    # 定义模型
+    model = BiLSTM_Net(embedding, embedding_dim=250, hidden_dim=100, num_layers=1, dropout=0.5,
+                       fix_embedding=fix_embedding)
+    model = model.to(device)  # 判断是由gpu还是cpu进行计算，gpu将由cuda进行
 
+    # 把train——data分为training_data和validation_data两部分
 
+    x_train, x_val, y_train, y_val = train_test_split(train_x, y, test_size=0.1, random_state=1, stratify=y)
+    print('Train | Len:{} \nValid | Len:{}'.format(len(y_train), len(y_val)))
+    print(x_train)
+    print(x_val)
+    print(y_train)
+    print(y_val)
 
+    # 转化为dataset作为输入
+    train_dataset = myDataset(x=x_train, y=y_train)
+    val_dataset = myDataset(x=x_val, y=y_val)
 
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 
+    #  ******************************
+    #  开始训练
+    #  ******************************
+    training(batch_size=batch_size, n_epoch=epoch, lr=lr, train=train_loader, valid=val_loader, model=model,
+             device=device)
+
+    # 保存模型
+    print(model)
+    writer.close()
+
+    # 开始test
+    print("loading testdata ...")
+    test_x = read_testing_data()
+    preprocess = Preprocess(test_x, sen_len, w2v_path=w2v_path)
+    embedding = preprocess.make_embedding(load=True)
+    test_x = preprocess.sentence_word2index()
+    test_dataset = myDataset(x=test_x, y=None)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+
+    print("\nload model ...")
+    model = torch.load(finalmodel_path)
+    outputs = testing(batch_size=batch_size, test_loader=test_loader, model=model, device=device)
+
+    with open("work.txt", "w") as f:
+        for line in outputs:
+            f.write(str(line) + "\n")
+    f.close()
